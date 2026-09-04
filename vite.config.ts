@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/sample/',
+  base: '/useless_project_temp/',
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
     exclude: ['@mediapipe/tasks-vision'],
