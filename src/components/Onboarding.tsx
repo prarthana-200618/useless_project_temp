@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import type { CharacterTask } from '../data/characterTasks';
 
 const STORAGE_KEY = 'iksha_inja_onboarded';
 
 interface OnboardingProps {
     onDismiss: () => void;
+    tasks?: CharacterTask[];
+    onSelectTask?: (index: number) => void;
 }
 
 const steps = [
@@ -34,7 +37,7 @@ const steps = [
     },
 ];
 
-export function Onboarding({ onDismiss }: OnboardingProps) {
+export function Onboarding({ onDismiss, tasks = [], onSelectTask }: OnboardingProps) {
     const [visible, setVisible] = useState(false);
 
     useEffect(() => {
@@ -45,6 +48,12 @@ export function Onboarding({ onDismiss }: OnboardingProps) {
 
     function handleDismiss() {
         localStorage.setItem(STORAGE_KEY, '1');
+        onDismiss();
+    }
+
+    function handleSelectTask(index: number) {
+        localStorage.setItem(STORAGE_KEY, '1');
+        if (onSelectTask) onSelectTask(index);
         onDismiss();
     }
 
@@ -76,10 +85,11 @@ export function Onboarding({ onDismiss }: OnboardingProps) {
                 }}
             >
                 {/* Header */}
-                <div style={{ textAlign: 'center', marginBottom: 32 }}>
-                    <div style={{ fontSize: 52, marginBottom: 12, animation: 'bounce-gentle 2s ease infinite' }}>
+                <div style={{ textAlign: 'center', marginBottom: 20 }}>
+                    <div style={{ fontSize: 52, marginBottom: 8, animation: 'bounce-gentle 2s ease infinite' }}>
                         👃
                     </div>
+                    <div style={{ fontSize: 18, color: '#a8a8c0', marginBottom: 6 }}>ക്ഷ ✓ ഞ്ഞ</div>
                     <h1 style={{
                         fontFamily: 'Outfit, sans-serif',
                         fontSize: 28,
@@ -96,6 +106,30 @@ export function Onboarding({ onDismiss }: OnboardingProps) {
                         Your nose is now your mouse.
                     </p>
                 </div>
+
+                {/* Quick pick: let the user choose which character to draw */}
+                {tasks.length > 0 && (
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginBottom: 18 }}>
+                        {tasks.map((t, i) => (
+                            <button
+                                key={t.id}
+                                onClick={() => handleSelectTask(i)}
+                                style={{
+                                    padding: '8px 12px',
+                                    borderRadius: 10,
+                                    background: 'rgba(255,255,255,0.03)',
+                                    border: '1px solid rgba(255,255,255,0.06)',
+                                    color: '#fff',
+                                    cursor: 'pointer',
+                                    minWidth: 64,
+                                    fontSize: 18,
+                                }}
+                            >
+                                {t.character}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 {/* Steps */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 }}>

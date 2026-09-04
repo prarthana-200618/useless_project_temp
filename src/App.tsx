@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useCamera } from './hooks/useCamera';
 import { useFaceTracking } from './hooks/useFaceTracking';
 import { useHandTracking } from './hooks/useHandTracking';
+import { useAttemptRecording } from './hooks/useAttemptRecording';
 import { CameraView } from './components/CameraView';
 import { DrawingCanvas, type DrawingCanvasHandle } from './components/DrawingCanvas';
 import { NoseCursor } from './components/NoseCursor';
@@ -11,42 +12,64 @@ import { GestureGuide } from './components/GestureGuide';
 import { Onboarding, shouldShowOnboarding } from './components/Onboarding';
 import type { GestureType } from './vision/gestureRecognition';
 
-type AppState = 'idle' | 'drawing' | 'paused' | 'error' | 'no_face';
+// --- Challenge Components & Logic ---
+import { CHARACTER_TASKS } from './data/characterTasks';
+import { recognizeCharacter, type RecognitionResult } from './recognition/characterRecognizer';
+import { TaskIntro } from './components/TaskIntro';
+import { CharacterGuide } from './components/CharacterGuide';
+import { SuccessCelebration } from './components/SuccessCelebration';
+import { RetryOverlay } from './components/RetryOverlay';
+import { FinalSuccess } from './components/FinalSuccess';
+import { ProgressIndicator } from './components/ProgressIndicator';
+
+export type AppStage = 'task-intro' | 'drawing' | 'evaluating' | 'success' | 'retry' | 'final-success' | 'error';
+// We remove 'paused' from AppStage as pause now directly triggers 'evaluating' or serves as an internal mechanism.
+// 'no_face' will be displayed as status overlay, but stage remains what it is.
 
 const DEFAULT_BRUSH_COLOR = '#ffffff';
 const DEFAULT_BRUSH_SIZE = 8;
 
 export default function App() {
   // ── App state (React state — low frequency) ──
-  const [appState, setAppState] = useState<AppState>('idle');
+  const [appStage, setAppStage] = useState<AppStage>('task-intro');
+  const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
   const [faceDetected, setFaceDetected] = useState(false);
+
+  // Show standard boarding? We can skip or show once. We'll disable it for the challenge to reduce clicks,
+  // or keep it if they need to see how nose tracking works. The prompt didn't say remove it.
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding());
+
   const [brushColor, setBrushColor] = useState(DEFAULT_BRUSH_COLOR);
   const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH_SIZE);
   const [fistCountdown, setFistCountdown] = useState<number | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [currentGesture, setCurrentGesture] = useState<GestureType>('none');
+  const [recognitionResult, setRecognitionResult] = useState<RecognitionResult | null>(null);
 
-  // ── High-frequency refs (never trigger re-renders) ──
-  const noseRef = useRef<{ x: number; y: number } | null>(null);
-  const appStateRef = useRef<AppState>('idle');
+  // ── High-frequency refs ──
+  const noseRef = useRef<{ x: number; y: number; normalized: { x: number, y: number } } | null>(null);
+  const appStageRef = useRef<AppStage>('task-intro');
   const fistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fistIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fistStartRef = useRef<number | null>(null);
   const noseDisplayRef = useRef<{ x: number; y: number } | null>(null);
-  const noseCursorDomRef = useRef<{ update: (x: number, y: number) => void } | null>(null);
 
   // ── Canvas ref ──
   const drawingCanvasRef = useRef<DrawingCanvasHandle | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Whether the user has explicitly enabled drawing (via Start button or index gesture)
+  const drawingEnabledRef = useRef(false);
 
   // ── Camera ──
   const { videoRef, isReady: cameraReady, error: cameraError } = useCamera();
 
-  // Update appStateRef in sync with appState
+  // ── Attempt Recording ──
+  const { recordPoint, endCurrentStroke, clearAttempt, getAttempt } = useAttemptRecording();
+
+  // Update appStageRef in sync with appStage
   useEffect(() => {
-    appStateRef.current = appState;
-  }, [appState]);
+    appStageRef.current = appStage;
+  }, [appStage]);
 
   // Canvas size tracking
   useEffect(() => {
@@ -59,34 +82,35 @@ export default function App() {
 
   // Camera error → error state
   useEffect(() => {
-    if (cameraError) setAppState('error');
+    if (cameraError) setAppStage('error');
   }, [cameraError]);
 
-  // ── Nose movement handler (runs in RAF, never triggers React state) ──
-  const onNoseMove = useCallback((pos: { x: number; y: number }) => {
+  // ── Nose movement handler (runs in RAF) ──
+  const onNoseMove = useCallback((pos: { x: number; y: number; normalized: { x: number, y: number } }) => {
     noseRef.current = pos;
-
-    // Directly update the cursor DOM element position via a lightweight approach
-    // We store it and the NoseCursor will be driven by a separate RAF loop
     noseDisplayRef.current = pos;
 
-    const state = appStateRef.current;
-    if (state === 'drawing') {
+    const stage = appStageRef.current;
+    // Only continue drawing/recording when in drawing stage and the user has explicitly enabled drawing
+    if (stage === 'drawing' && drawingEnabledRef.current) {
       const canvas = drawingCanvasRef.current;
       if (canvas) {
         canvas.continueStrokeAt(pos.x, pos.y);
+        recordPoint(pos.normalized.x, pos.normalized.y, performance.now());
       }
     }
-  }, []);
+  }, [recordPoint]);
 
   // ── Face detection change ──
   const onFaceDetected = useCallback((detected: boolean) => {
     setFaceDetected(detected);
     if (!detected) {
-      // When face lost, end any active stroke
-      drawingCanvasRef.current?.endStroke();
+      if (appStageRef.current === 'drawing') {
+        drawingCanvasRef.current?.endStroke();
+        endCurrentStroke();
+      }
     }
-  }, []);
+  }, [endCurrentStroke]);
 
   // ── Face tracking ──
   useFaceTracking({
@@ -98,7 +122,7 @@ export default function App() {
     onFaceDetected,
   });
 
-  // ── Cancel fist timer ──
+  // ── Fist Timer / Clear Logic ──
   const cancelFistTimer = useCallback(() => {
     if (fistTimerRef.current) {
       clearTimeout(fistTimerRef.current);
@@ -112,9 +136,22 @@ export default function App() {
     setFistCountdown(null);
   }, []);
 
-  // ── Start fist countdown to clear ──
+  const handleClear = useCallback(() => {
+    cancelFistTimer();
+    drawingCanvasRef.current?.clear();
+    clearAttempt();
+    setRecognitionResult(null);
+    if (appStageRef.current !== 'task-intro' && appStageRef.current !== 'final-success') {
+      setAppStage('drawing'); // Reset to attempting the same task
+    }
+  }, [cancelFistTimer, clearAttempt]);
+
   const startFistCountdown = useCallback(() => {
-    if (fistStartRef.current !== null) return; // already running
+    if (fistStartRef.current !== null) return;
+
+    // Disable fist processing outside of drawing interaction
+    if (appStageRef.current === 'task-intro' || appStageRef.current === 'final-success' || appStageRef.current === 'success') return;
+
     fistStartRef.current = Date.now();
     setFistCountdown(3);
 
@@ -126,42 +163,73 @@ export default function App() {
     }, 50);
 
     fistTimerRef.current = setTimeout(() => {
-      drawingCanvasRef.current?.clear();
-      cancelFistTimer();
-      setAppState('idle');
+      handleClear();
     }, 3000);
-  }, [cancelFistTimer]);
+  }, [handleClear]);
+
+  // ── Recognition Execution ──
+  const evaluateAttempt = useCallback(() => {
+    const currentTask = CHARACTER_TASKS[currentTaskIndex];
+    const attempt = getAttempt();
+
+    setAppStage('evaluating');
+
+    // Evaluate (small timeout to allow overlay to render)
+    setTimeout(() => {
+      const result = recognizeCharacter(attempt.strokes, currentTask.template, currentTask.character);
+      setRecognitionResult(result);
+      if (result.matched) {
+        setAppStage('success');
+        // disable drawing until user explicitly restarts
+        drawingEnabledRef.current = false;
+      } else {
+        setAppStage('retry');
+      }
+    }, 100);
+  }, [currentTaskIndex, getAttempt]);
 
   // ── Gesture handler ──
   const onGesture = useCallback((gesture: GestureType) => {
     setCurrentGesture(gesture);
-    const state = appStateRef.current;
+    const stage = appStageRef.current;
+
+    // Fist Clear Gesture
+    if (gesture === 'fist') {
+      if (fistStartRef.current === null) startFistCountdown();
+      return; // Prioritize fist execution without letting it fall through
+    } else {
+      if (fistStartRef.current !== null) cancelFistTimer();
+    }
 
     if (gesture === 'index_up') {
-      cancelFistTimer();
-      if (state === 'idle' || state === 'paused') {
-        setAppState('drawing');
-        // Start stroke from current nose position
+      if (stage === 'task-intro') return; // Can't start drawing in intro from gesture right now
+      if (stage === 'retry') {
+        // Restart on index up while in retry instead of waiting for button click
+        setAppStage('drawing');
+        clearAttempt();
+        drawingCanvasRef.current?.clear();
+        return;
+      }
+
+      // Start drawing if we are evaluating or paused/drawing logic happens implicitly
+      // We don't have an explicit 'paused' stage anymore, we evaluate on open_palm.
+      // E.g. we might have stopped tracking briefly because face left view.
+      if (stage === 'drawing' && faceDetected) {
+        // Resume explicit stroke (also mark that the user enabled drawing via gesture)
+        drawingEnabledRef.current = true;
         const nose = noseRef.current;
         if (nose) drawingCanvasRef.current?.beginStroke(nose.x, nose.y);
       }
-    } else if (gesture === 'open_palm') {
-      cancelFistTimer();
-      if (state === 'drawing') {
+    }
+
+    if (gesture === 'open_palm') {
+      if (stage === 'drawing') {
         drawingCanvasRef.current?.endStroke();
-        setAppState('paused');
-      }
-    } else if (gesture === 'fist') {
-      if (fistStartRef.current === null) {
-        startFistCountdown();
-      }
-    } else {
-      // Non-fist gesture: cancel countdown
-      if (fistStartRef.current !== null) {
-        cancelFistTimer();
+        endCurrentStroke();
+        evaluateAttempt();
       }
     }
-  }, [cancelFistTimer, startFistCountdown]);
+  }, [startFistCountdown, cancelFistTimer, evaluateAttempt, faceDetected, clearAttempt]);
 
   // ── Hand tracking ──
   useHandTracking({
@@ -170,7 +238,7 @@ export default function App() {
     onGesture,
   });
 
-  // ── Nose cursor driven by a separate RAF for smooth updates ──
+  // ── Nose cursor loop ──
   const [noseCursorPos, setNoseCursorPos] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     let raf: number;
@@ -182,46 +250,63 @@ export default function App() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // ── Drawing state management ──
-  useEffect(() => {
-    if (appState === 'drawing') {
-      const nose = noseRef.current;
-      if (nose) drawingCanvasRef.current?.beginStroke(nose.x, nose.y);
-    }
-    if (appState !== 'drawing') {
-      drawingCanvasRef.current?.endStroke();
-    }
-  }, [appState]);
-
-  // ── Control panel actions ──
-  function handleStartDrawing() {
-    setAppState('drawing');
-    const nose = noseRef.current;
-    if (nose) drawingCanvasRef.current?.beginStroke(nose.x, nose.y);
-  }
-
-  function handlePause() {
-    drawingCanvasRef.current?.endStroke();
-    setAppState('paused');
-  }
-
-  function handleClear() {
-    cancelFistTimer();
+  // ── Navigation Functions ──
+  const startDrawingTask = () => {
     drawingCanvasRef.current?.clear();
-    setAppState('idle');
-  }
+    clearAttempt();
+    // enable drawing only after user clicked Start
+    drawingEnabledRef.current = true;
+    setAppStage('drawing');
+    // If we already have a detected nose, begin the stroke immediately so drawing begins smoothly
+    const nose = noseRef.current;
+    if (nose && faceDetected) {
+      drawingCanvasRef.current?.beginStroke(nose.x, nose.y);
+    }
+  };
 
+  const handleNextTask = () => {
+    if (currentTaskIndex + 1 < CHARACTER_TASKS.length) {
+      setCurrentTaskIndex(currentTaskIndex + 1);
+      setAppStage('task-intro');
+      drawingCanvasRef.current?.clear();
+      clearAttempt();
+      setRecognitionResult(null);
+    } else {
+      setAppStage('final-success');
+    }
+  };
+
+  const handleDrawAgain = () => {
+    setCurrentTaskIndex(0);
+    setAppStage('task-intro');
+    drawingCanvasRef.current?.clear();
+    clearAttempt();
+    setRecognitionResult(null);
+  };
+
+  const handleRetry = () => {
+    drawingCanvasRef.current?.clear();
+    clearAttempt();
+    // re-enable drawing when retrying
+    drawingEnabledRef.current = true;
+    setAppStage('drawing');
+  };
+
+  // ── Existing Manual Controls ──
   function handleSave() {
     drawingCanvasRef.current?.exportPng();
   }
 
   function handleSaveComposite() {
-    if (videoRef.current) {
-      drawingCanvasRef.current?.exportCompositePng(videoRef.current);
-    }
+    if (videoRef.current) drawingCanvasRef.current?.exportCompositePng(videoRef.current);
   }
 
-  const effectiveState: AppState = !faceDetected && appState !== 'error' ? 'no_face' : appState;
+  // Visual status
+  const effectiveState = !faceDetected && appStage !== 'error' ? 'no_face' :
+    appStage === 'drawing' ? 'drawing' : 'paused'; // Using existing generic icon mapping for cursor/pill
+
+  const currentTask = CHARACTER_TASKS[currentTaskIndex];
+  const isDrawingOrEvaluating = appStage === 'drawing' || appStage === 'evaluating' || appStage === 'retry';
 
   return (
     <div
@@ -237,20 +322,23 @@ export default function App() {
       {/* ══ Camera View ══ */}
       <CameraView videoRef={videoRef} isReady={cameraReady} />
 
+      {/* ══ Character Guide Overlay ══ */}
+      <CharacterGuide character={currentTask.character} isVisible={isDrawingOrEvaluating} />
+
       {/* ══ Drawing Canvas ══ */}
       <DrawingCanvas
         ref={drawingCanvasRef}
         brushColor={brushColor}
         brushSize={brushSize}
-        isDrawing={appState === 'drawing'}
+        isDrawing={appStage === 'drawing'}
       />
 
       {/* ══ Nose Cursor ══ */}
-      {noseCursorPos && faceDetected && (
+      {noseCursorPos && faceDetected && appStage !== 'task-intro' && (
         <NoseCursor
           x={noseCursorPos.x}
           y={noseCursorPos.y}
-          state={effectiveState}
+          state={effectiveState as any}
           visible={cameraReady && faceDetected}
         />
       )}
@@ -285,26 +373,20 @@ export default function App() {
         </h1>
         <p
           style={{
-            fontSize: 'clamp(9px, 1.5vw, 13px)',
-            color: 'rgba(168,168,192,0.75)',
-            fontStyle: 'italic',
-            letterSpacing: '0.04em',
-            marginBottom: 4,
-          }}
-        >
-          Mookukond Iksha, injaa, gaagga varakum
-        </p>
-        <p
-          style={{
             fontSize: 'clamp(8px, 1.2vw, 11px)',
             color: 'rgba(139,92,246,0.6)',
             letterSpacing: '0.08em',
             textTransform: 'uppercase',
           }}
         >
-          A Nose-Powered Drawing Experiment
+          MALAYALAM CHARACTER CHALLENGE
         </p>
       </div>
+
+      {/* ══ Progress Indicator ══ */}
+      {(appStage === 'drawing' || appStage === 'task-intro') && (
+        <ProgressIndicator currentTaskIndex={currentTaskIndex} totalTasks={CHARACTER_TASKS.length} />
+      )}
 
       {/* ══ Status Indicator ══ */}
       <div
@@ -315,7 +397,7 @@ export default function App() {
           zIndex: 70,
         }}
       >
-        <StatusIndicator state={effectiveState} faceDetected={faceDetected} />
+        <StatusIndicator state={effectiveState as any} faceDetected={faceDetected} />
       </div>
 
       {/* ══ Error States ══ */}
@@ -337,23 +419,60 @@ export default function App() {
       />
 
       {/* ══ Control Panel ══ */}
-      <ControlPanel
-        appState={effectiveState}
-        brushColor={brushColor}
-        brushSize={brushSize}
-        onSetBrushColor={setBrushColor}
-        onSetBrushSize={setBrushSize}
-        onStartDrawing={handleStartDrawing}
-        onPause={handlePause}
-        onClear={handleClear}
-        onSave={handleSave}
-        onSaveComposite={handleSaveComposite}
-        onHelp={() => setShowOnboarding(true)}
-      />
+      {(appStage === 'drawing' || appStage === 'retry') && (
+        <ControlPanel
+          appState={effectiveState as any}
+          brushColor={brushColor}
+          brushSize={brushSize}
+          onSetBrushColor={setBrushColor}
+          onSetBrushSize={setBrushSize}
+          onStartDrawing={() => { }} // Disabled explicit play/pause button since gesture drives logic
+          onPause={() => { }}
+          onClear={handleClear}
+          onSave={handleSave}
+          onSaveComposite={handleSaveComposite}
+          onHelp={() => setShowOnboarding(true)}
+        />
+      )}
+
+      {/* ══ Task Intro ══ */}
+      {appStage === 'task-intro' && !showOnboarding && cameraReady && (
+        <TaskIntro task={currentTask} taskIndex={currentTaskIndex} onStart={startDrawingTask} />
+      )}
+
+      {/* ══ Retry Overlay ══ */}
+      {appStage === 'retry' && recognitionResult && (
+        <RetryOverlay score={recognitionResult.score} onRetry={handleRetry} />
+      )}
+
+      {/* ══ Success Celebration ══ */}
+      {appStage === 'success' && recognitionResult && (
+        <SuccessCelebration task={currentTask} score={recognitionResult.score} onNext={handleNextTask} />
+      )}
+
+      {/* ══ Evaluating Overlay ══ */}
+      {appStage === 'evaluating' && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+          <h2 style={{ fontSize: 24, animation: 'pulse 1s infinite' }}>Checking your nose masterpiece... 👃</h2>
+        </div>
+      )}
+
+      {/* ══ Final Success ══ */}
+      {appStage === 'final-success' && (
+        <FinalSuccess onRestart={handleDrawAgain} />
+      )}
 
       {/* ══ Onboarding ══ */}
       {showOnboarding && (
-        <Onboarding onDismiss={() => setShowOnboarding(false)} />
+        <Onboarding
+          onDismiss={() => setShowOnboarding(false)}
+          tasks={CHARACTER_TASKS}
+          onSelectTask={(i) => {
+            setCurrentTaskIndex(i);
+            setShowOnboarding(false);
+            setAppStage('task-intro');
+          }}
+        />
       )}
     </div>
   );
