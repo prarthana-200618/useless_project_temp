@@ -1,7 +1,7 @@
 # Iksha Inja 🎯
 
 ## Basic Details
-### WIP: NoseArtists (replace as needed)
+### WIP: NoseArtists 
 
 ### Team Members
 - Team Lead: [Prarthana R NAir] - [College of Engineering Kalloopara]
@@ -26,10 +26,16 @@ For Software:
 - Tools used: Vite, TypeScript, GitHub Actions (CI/CD), gh-pages (optional)
 
 For Hardware:
-- Webcam (internal or external)
+-Webcam — Internal or external webcam for real-time face and hand tracking.
 
 ### Implementation
-For Software:
+For Software:React + TypeScript — Frontend application development.
+Vite — Development server and production build tool.
+MediaPipe Tasks Vision — Face and hand tracking.
+Tailwind CSS — User interface styling.
+Node.js & npm — Dependency management and development environment.
+GitHub Actions — Continuous integration and deployment.
+GitHub Pages — Hosting the deployed web application.
 
 # Installation
 
@@ -56,7 +62,19 @@ npm run preview
 ```
 
 ### Project Documentation
-For Software:
+The project is a nose-driven drawing web application that uses MediaPipe face and hand tracking to control drawing and application interactions.
+
+Users select a Malayalam character to draw.
+The user explicitly starts the drawing session.
+The nose tip controls the brush movement on the canvas.
+Hand gestures are used for actions such as start, pause, clear, and submit.
+Stroke points are recorded and normalized using useAttemptRecording.
+The completed drawing is evaluated using the trajectory-based characterRecognizer.
+A recognition score determines whether the character matches the selected template.
+Successful attempts display a celebration overlay, while unsuccessful attempts can be retried.
+The production build is generated in the dist/ directory.
+GitHub Actions automatically builds and deploys the application to GitHub Pages when changes are merged into main.
+The Vite base path is configured as /useless_project_temp/ for GitHub Pages deployment.
 
 # Screenshots (Add at least 3)
 Screenshot 2026-09-04 073118.png
@@ -67,13 +85,16 @@ Screenshot 2026-09-04 073118.png
 
 Screenshot 2026-09-04 073029.png  
 
+ iksha-inja-drawing-1788487063782.png 
+ *output*
+
 # Diagrams
 ![Workflow](path/to/workflow.png)
 *High-level architecture: Webcam → MediaPipe → Nose cursor → Drawing canvas → Recognition*
 
 ## Project Demo
 # Video
-[Add demo video link here]
+noseartist.mp4
 *Explain what the video demonstrates*
 
 ## Team Contributions
