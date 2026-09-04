@@ -59,14 +59,13 @@ npm run preview
 For Software:
 
 # Screenshots (Add at least 3)
-![Screenshot1](path/to/screenshot1.png)
+Screenshot 2026-09-04 073118.png
 *App showing nose cursor over the canvas*
 
-![Screenshot2](path/to/screenshot2.png)
+ Screenshot 2026-09-04 073104.png
 *Task intro screen with Malayalam characters (ക്ഷ, ഞ്ഞ) and Start button*
 
-![Screenshot3](path/to/screenshot3.png)
-*Success celebration overlay after successful recognition*
+Screenshot 2026-09-04 073029.png  
 
 # Diagrams
 ![Workflow](path/to/workflow.png)
